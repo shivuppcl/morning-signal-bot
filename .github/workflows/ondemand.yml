@@ -1,0 +1,33 @@
+name: Telegram Scan Command
+
+on:
+  schedule:
+    # Every 5 minutes, 03:00-10:59 UTC (= 8:30-16:29 IST), Mon-Fri.
+    # Checks the bot inbox for /scan; replies with a full volume scan.
+    # GitHub cron has jitter — expect a reply 2-12 minutes after /scan.
+    - cron: "*/5 3-10 * * 1-5"
+  workflow_dispatch: {}
+
+concurrency:
+  group: telegram-scan
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check inbox and scan if /scan was sent
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python telegram_command_bot.py
