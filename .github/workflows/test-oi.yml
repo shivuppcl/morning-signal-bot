@@ -1,0 +1,14 @@
+name: Test NSE OI from cloud
+on:
+  workflow_dispatch: {}
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install curl_cffi
+      - run: python -c "from oi_live import fetch_oi_spurts; d = fetch_oi_spurts(); print('OI symbols from GitHub cloud:', len(d))"
