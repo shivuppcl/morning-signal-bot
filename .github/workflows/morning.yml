@@ -1,0 +1,29 @@
+name: Morning 9-15 Volume Signal
+
+on:
+  schedule:
+    # 03:40 UTC = 9:10 AM IST, Mon-Fri. GitHub adds a few minutes of dispatch
+    # delay; the script waits until 9:18:30 IST (9:16 first-minute candle),
+    # so the Telegram message lands ~9:19-9:25 IST.
+    - cron: "40 3 * * 1-5"
+  workflow_dispatch: {}   # manual "Run workflow" button for testing
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run 9:15 volume scan and send to Telegram
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python morning_signal_bot.py
