@@ -24,6 +24,7 @@ import pandas as pd
 import yfinance as yf
 
 from morning_signal_bot import FNO_STOCKS, tg_creds, BATCH
+from oi_live import oi_top_section
 
 IST = timezone(timedelta(hours=5, minutes=30))
 RULE1_MIN = 2.0
@@ -120,6 +121,15 @@ def run_scan_message():
         mark = f" {star}" if r["hike"] >= RULE1_MIN else ""
         L.append(f"{d} <b>{r['s']}</b>  {r['hike']:.2f}x  "
                  f"{r['chg']:+.2f}%  Rs{r['px']:.1f}{mark}")
+
+    # Top OI spikes vs yesterday (fail-soft: empty when NSE unreachable)
+    vol_spikers = {r["s"] for r in rows if r["hike"] >= RULE1_MIN}
+    oi_sec = oi_top_section(vol_hike_syms=vol_spikers)
+    if oi_sec:
+        L.append(oi_sec)
+    else:
+        L.append("\n(OI data unavailable from this server — NSE may block "
+                 "non-Indian IPs)")
     return "\n".join(L)
 
 
