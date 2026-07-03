@@ -2,10 +2,13 @@ name: Morning 9-15 Volume Signal
 
 on:
   schedule:
-    # 03:40 UTC = 9:10 AM IST, Mon-Fri. GitHub adds a few minutes of dispatch
-    # delay; the script waits until 9:18:30 IST (9:16 first-minute candle),
-    # so the Telegram message lands ~9:19-9:25 IST.
-    - cron: "40 3 * * 1-5"
+    # THREE redundant slots — GitHub drops scheduled dispatches on free tier,
+    # so we fire at 9:05, 9:22 and 9:35 IST and dedupe: only the first run
+    # that actually executes sends the message (guard step below).
+    # The script itself waits until 9:18:30 IST before scanning.
+    - cron: "35 3 * * 1-5"   # 9:05 IST
+    - cron: "52 3 * * 1-5"   # 9:22 IST
+    - cron: "5 4 * * 1-5"    # 9:35 IST
   workflow_dispatch: {}   # manual "Run workflow" button for testing
 
 jobs:
@@ -15,16 +18,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Skip if already sent today (dedup across redundant crons)
+        id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          count=$(gh run list --repo ${{ github.repository }} \
+            --workflow "Morning 9-15 Volume Signal" \
+            --status success --created "$(date -u +%Y-%m-%d)" \
+            --json databaseId --jq 'length')
+          echo "prior successful runs today: $count"
+          if [ "$count" -gt 0 ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Already sent today — skipping."
+          fi
+
       - uses: actions/setup-python@v5
+        if: steps.guard.outputs.skip != 'true'
         with:
           python-version: "3.12"
 
       - name: Install dependencies
+        if: steps.guard.outputs.skip != 'true'
         run: pip install -r requirements.txt
 
-      - name: Run 9:15 volume scan and send to Telegram
+      - name: Run 9:16 first-minute scan and send to Telegram
+        if: steps.guard.outputs.skip != 'true'
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python morning_signal_bot.py
-
