@@ -15,6 +15,9 @@ jobs:
   scan:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    permissions:
+      actions: read       # needed by the dedup guard to list today's runs
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -23,12 +26,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Fail-open: if the count query errors for any reason, count=0
+          # and the message still goes out. A duplicate beats silence.
           count=$(gh run list --repo ${{ github.repository }} \
             --workflow "Morning 9-15 Volume Signal" \
             --status success --created "$(date -u +%Y-%m-%d)" \
-            --json databaseId --jq 'length')
-          echo "prior successful runs today: $count"
-          if [ "$count" -gt 0 ]; then
+            --json databaseId --jq 'length' 2>/dev/null || echo 0)
+          echo "prior successful runs today: ${count:-0}"
+          if [ "${count:-0}" -gt 0 ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "Already sent today — skipping."
           fi
