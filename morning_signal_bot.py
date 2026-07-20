@@ -205,6 +205,17 @@ def main():
     print("scanning ...", flush=True)
     rows, today, yday = scan()
     msg = fmt(rows, today)
+
+    # Top-15 OI spikes vs yesterday (visible note if NSE doesn't respond —
+    # never a silent absence)
+    try:
+        from oi_live import oi_top_section
+        oi_sec = oi_top_section(vol_hike_syms={r["symbol"] for r in rows})
+        msg += ("\n" + oi_sec) if oi_sec else \
+               "\n\n(OI data not available right now)"
+    except Exception as e:
+        msg += f"\n\n(OI section error: {type(e).__name__})"
+
     try:
         print(msg.replace("<b>", "").replace("</b>", ""))
     except UnicodeEncodeError:

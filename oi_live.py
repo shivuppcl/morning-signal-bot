@@ -57,7 +57,7 @@ def fetch_oi_spurts() -> dict:
         return {}
 
 
-INDICES = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"}
+INDICES = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50"}
 
 
 def oi_top_section(vol_hike_syms: set | None = None, top_n: int = 15) -> str:
