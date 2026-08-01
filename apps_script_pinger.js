@@ -41,6 +41,9 @@ function tick() {
   // concurrency + dedup guarantee a single message.
   if (hm >= 9 * 60 + 8 && hm <= 9 * 60 + 16) dispatch('morning.yml');
 
+  // Evening deals digest: one dispatch window 18:42-18:50 IST
+  if (hm >= 18 * 60 + 42 && hm <= 18 * 60 + 50) dispatch('deals.yml');
+
   // /scan checker: market hours
   if (hm >= 8 * 60 + 30 && hm <= 16 * 60 + 30) dispatch('ondemand.yml');
 }
