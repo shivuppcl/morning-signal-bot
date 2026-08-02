@@ -41,7 +41,40 @@ ENTRY_START  = 9 * 60 + 19    # enter from 9:19 IST (right after the signal)
 ENTRY_END    = 9 * 60 + 35    # ... latest 9:35 (one-shot at the open)
 TARGET_PCT   = 12.0
 STOP_PCT     = -25.0
+BASKET_TARGET = 25000   # Rs: if today's total P&L (all 3) hits this -> close all
 CLOSE_HH_MM  = (11, 0)  # hard close time IST
+
+
+def fetch_lot_sizes():
+    """{symbol: lot_size} for the current expiry month from NSE fo_mktlots.csv."""
+    try:
+        from curl_cffi import requests as cffi
+        r = cffi.Session(impersonate="chrome").get(
+            "https://nsearchives.nseindia.com/content/fo/fo_mktlots.csv", timeout=15)
+        if r.status_code != 200:
+            return {}
+        lines = [l for l in r.text.splitlines() if "," in l]
+        hdr = [c.strip() for c in lines[0].split(",")]
+        # first monthly column after SYMBOL = near month
+        try:
+            mcol = 2 if hdr[1].upper().startswith("SYMBOL") else 2
+        except Exception:
+            mcol = 2
+        out = {}
+        for ln in lines[1:]:
+            p = [c.strip() for c in ln.split(",")]
+            if len(p) <= mcol:
+                continue
+            sym = p[1].upper()
+            try:
+                lot = int(p[mcol])
+                if lot > 0:
+                    out[sym] = lot
+            except Exception:
+                continue
+        return out
+    except Exception:
+        return {}
 STATE_F      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "paper_state.json")
 SCORE_F      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scorecard.csv")
 
@@ -233,6 +266,8 @@ def main():
             except Exception:
                 continue
         st["prev_close"] = pc
+        st["lots"] = fetch_lot_sizes()
+        st["realized_pnl"] = 0.0
         st["morning"] = build_morning_list(None, pc)
         print(f"morning list ({len(st['morning'])}): {list(st['morning'])}")
         if st["morning"]:
@@ -251,28 +286,50 @@ def main():
     sess = _chain_session()
     force_close = hm >= CLOSE_HH_MM[0] * 60 + CLOSE_HH_MM[1]
 
-    # ---- manage open positions ----
-    for sym in list(st["open"].keys()):
+    # ---- price all open positions, compute rupee P&L ----
+    def rupee(pos, cur):
+        return (cur - pos["entry_prem"]) * pos.get("lot", 0) * LOTS
+
+    cur_px = {}
+    for sym, pos in st["open"].items():
+        c = option_price(sess, sym, pos["strike"], pos["dir"])
+        if c and c > 0:
+            cur_px[sym] = c
+    unreal = sum(rupee(st["open"][s], c) for s, c in cur_px.items())
+    total_today = st.get("realized_pnl", 0.0) + unreal
+
+    def _close(sym, cur, outcome):
         pos = st["open"][sym]
-        cur = option_price(sess, sym, pos["strike"], pos["dir"])
-        if cur is None or cur <= 0:
-            continue
         ret = (cur / pos["entry_prem"] - 1) * 100
-        outcome = None
-        if ret >= TARGET_PCT:      outcome = "TARGET"
-        elif ret <= STOP_PCT:      outcome = "STOP"
-        elif force_close:          outcome = "TIME"
-        if outcome:
-            append_score([today, sym, pos["dir"], pos["strike"], pos["entry_bar"],
-                          round(pos["entry_prem"], 2), now.strftime("%H:%M"),
-                          round(cur, 2), round(ret, 1), outcome, LOTS,
-                          pos.get("hike", ""), pos.get("oi_ratio", ""),
-                          pos.get("vwap_ok", "")])
-            st["closed"].append(sym)
-            del st["open"][sym]
-            emo = "\U0001F7E2" if ret > 0 else "\U0001F534"
-            tg(f"{emo} <b>PAPER EXIT {outcome}</b>  {sym} {pos['dir']} {pos['strike']:.0f}\n"
-               f"entry {pos['entry_prem']:.1f} -> {cur:.1f}  ({ret:+.1f}% premium)")
+        pnl = rupee(pos, cur)
+        st["realized_pnl"] = st.get("realized_pnl", 0.0) + pnl
+        append_score([today, sym, pos["dir"], pos["strike"], pos["entry_bar"],
+                      round(pos["entry_prem"], 2), now.strftime("%H:%M"),
+                      round(cur, 2), round(ret, 1), outcome, LOTS,
+                      pos.get("hike", ""), pos.get("oi_ratio", ""), pos.get("vwap_ok", "")])
+        st["closed"].append(sym)
+        del st["open"][sym]
+        emo = "\U0001F7E2" if ret > 0 else "\U0001F534"
+        tg(f"{emo} <b>PAPER EXIT {outcome}</b>  {sym} {pos['dir']} {pos['strike']:.0f}\n"
+           f"entry {pos['entry_prem']:.1f} -> {cur:.1f}  ({ret:+.1f}%, Rs{pnl:+,.0f})")
+
+    # ---- BASKET target: total P&L of all trades hits Rs 25,000 -> close all ----
+    if st["open"] and total_today >= BASKET_TARGET and not st.get("basket_done"):
+        tg(f"\U0001F3AF <b>BASKET TARGET HIT</b>  today Rs{total_today:+,.0f} "
+           f">= Rs{BASKET_TARGET:,}\nClosing all {len(st['open'])} trades, done for day.")
+        for sym in list(st["open"].keys()):
+            _close(sym, cur_px.get(sym, st["open"][sym]["entry_prem"]), "BASKET")
+        st["basket_done"] = True
+    else:
+        # ---- per-trade rules ----
+        for sym in list(st["open"].keys()):
+            cur = cur_px.get(sym)
+            if cur is None:
+                continue
+            ret = (cur / st["open"][sym]["entry_prem"] - 1) * 100
+            if ret >= TARGET_PCT:   _close(sym, cur, "TARGET")
+            elif ret <= STOP_PCT:   _close(sym, cur, "STOP")
+            elif force_close:       _close(sym, cur, "TIME")
 
     # ---- OPEN entry: top-3 morning-list names, one-shot at 9:19-9:35 ----
     if (not st.get("entered_open") and not force_close
@@ -307,16 +364,20 @@ def main():
             strike, prem = pick_strike(ch, direction)
             if prem <= 0:
                 print(f"  skip {sym}: no premium"); continue
+            lot = (st.get("lots") or {}).get(sym, 0)
+            if lot <= 0:                       # not in current F&O lot file
+                print(f"  skip {sym}: no current F&O lot"); continue
             st["open"][sym] = {"dir": direction, "strike": strike,
                                "entry_prem": prem, "entry_bar": now.strftime("%H:%M"),
                                "hike": info["hike"], "oi_ratio": round(oir, 2),
-                               "vwap_ok": bool(vwap_ok)}
+                               "vwap_ok": bool(vwap_ok), "lot": lot}
             taken += 1
+            cap = prem * lot * LOTS
             tg(f"\U0001F4CB <b>PAPER ENTRY {taken}/{TOP_N_OPEN}</b>  {sym} "
                f"{direction} {strike:.0f} ({STRIKES_OTM} OTM)\n"
-               f"prem {prem:.1f} x {LOTS} lots | move {chg:+.1f}% | "
-               f"hike {info['hike']:.1f}x | OI {oir:.2f}x | VWAP-ok {vwap_ok}\n"
-               f"target +{TARGET_PCT:.0f}% / stop {STOP_PCT:.0f}% / close 11:00")
+               f"prem {prem:.1f} x {LOTS} lots x {lot} = Rs{cap:,.0f} deployed\n"
+               f"move {chg:+.1f}% | hike {info['hike']:.1f}x | OI {oir:.2f}x | VWAP-ok {vwap_ok}\n"
+               f"+{TARGET_PCT:.0f}% / {STOP_PCT:.0f}% / 11:00 | basket +Rs{BASKET_TARGET:,}")
         st["entered_open"] = True
         if taken == 0:
             tg("<b>PAPER</b> " + today + ": no clean entries at open "
@@ -331,9 +392,10 @@ def main():
             body = "\n".join(
                 f"{'🟢' if float(r['ret_pct'])>0 else '🔴'} {r['symbol']} {r['dir']} "
                 f"{r['ret_pct']}% [{r['outcome']}]" for r in todays)
+            day_pnl = st.get("realized_pnl", 0.0)
             tg(f"<b>PAPER SCORECARD</b> {today}\n"
-               f"{len(todays)} trades | {wins} win ({wins/len(todays)*100:.0f}%)\n"
-               f"{body}{running_stats()}")
+               f"{len(todays)} trades | {wins} win ({wins/len(todays)*100:.0f}%) | "
+               f"day P&L Rs{day_pnl:+,.0f}\n{body}{running_stats()}")
         else:
             tg(f"<b>PAPER SCORECARD</b> {today}\nNo qualifying trades today "
                f"(morning-list stocks never met OI+VWAP+chase rules).")
