@@ -32,10 +32,13 @@ from chain_analytics import _session as _chain_session, fetch_chain
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
-OI_THR       = 1.08     # live OI / prev OI to count as an OI spike this early
-CHASE_MAX    = 4.0      # skip if abs(move vs prev close) already > this %
+OI_THR       = 1.08     # live OI / prev OI = OI spike (logged, not gated at 9:20)
+CHASE_MAX    = 4.0      # HARD: never enter a stock already moved > this %
 STRIKES_OTM  = 2
 LOTS         = 5
+TOP_N_OPEN   = 3        # take top-3 morning-list names by first-minute hike
+ENTRY_START  = 9 * 60 + 19    # enter from 9:19 IST (right after the signal)
+ENTRY_END    = 9 * 60 + 35    # ... latest 9:35 (one-shot at the open)
 TARGET_PCT   = 12.0
 STOP_PCT     = -25.0
 CLOSE_HH_MM  = (11, 0)  # hard close time IST
@@ -141,7 +144,7 @@ def build_morning_list(m1, prev_close):
                 continue
             chg = (px / pc - 1) * 100
             if tv / yv >= BAR1_HIKE_MIN and abs(chg) >= PRICE_MIN_CHG and tv * px >= MIN_TURNOVER:
-                ml[x] = round(chg, 2)         # sign = spike direction
+                ml[x] = {"chg": round(chg, 2), "hike": round(tv / yv, 2)}
         except Exception:
             continue
     return ml
@@ -179,7 +182,7 @@ def append_score(row):
         if new:
             w.writerow(["date", "symbol", "dir", "strike", "entry_bar",
                         "entry_prem", "exit_bar", "exit_prem", "ret_pct",
-                        "outcome", "lots"])
+                        "outcome", "lots", "hike", "oi_ratio", "vwap_ok"])
         w.writerow(row)
 
 
@@ -233,8 +236,10 @@ def main():
         st["morning"] = build_morning_list(None, pc)
         print(f"morning list ({len(st['morning'])}): {list(st['morning'])}")
         if st["morning"]:
-            tg("<b>PAPER TRACKER armed</b> " + today +
-               f"\nMorning-list watch: {', '.join(st['morning'])}")
+            top = sorted(st["morning"].items(), key=lambda kv: -kv[1]["hike"])
+            watch = ", ".join(f"{s}({d['hike']:.0f}x)" for s, d in top[:6])
+            tg(f"<b>PAPER TRACKER armed</b> {today}\n"
+               f"Will take top-{TOP_N_OPEN} by hike at open (chase>4% skipped):\n{watch}")
 
     morning = st.get("morning") or {}
     prev_close = st.get("prev_close") or {}
@@ -260,22 +265,25 @@ def main():
         if outcome:
             append_score([today, sym, pos["dir"], pos["strike"], pos["entry_bar"],
                           round(pos["entry_prem"], 2), now.strftime("%H:%M"),
-                          round(cur, 2), round(ret, 1), outcome, LOTS])
+                          round(cur, 2), round(ret, 1), outcome, LOTS,
+                          pos.get("hike", ""), pos.get("oi_ratio", ""),
+                          pos.get("vwap_ok", "")])
             st["closed"].append(sym)
             del st["open"][sym]
             emo = "\U0001F7E2" if ret > 0 else "\U0001F534"
             tg(f"{emo} <b>PAPER EXIT {outcome}</b>  {sym} {pos['dir']} {pos['strike']:.0f}\n"
                f"entry {pos['entry_prem']:.1f} -> {cur:.1f}  ({ret:+.1f}% premium)")
 
-    # ---- look for new entries (not after force_close) ----
-    if not force_close:
-        for sym, spike_chg in morning.items():
-            if sym in st["open"] or sym in st["closed"]:
-                continue
-            if sym not in m1 or sym not in oi:
-                continue
-            oir = oi[sym]["latest_oi"] / oi[sym]["prev_oi"] if oi[sym]["prev_oi"] else 0
-            if oir < OI_THR:                                   # OI spike gate
+    # ---- OPEN entry: top-3 morning-list names, one-shot at 9:19-9:35 ----
+    if (not st.get("entered_open") and not force_close
+            and ENTRY_START <= hm <= ENTRY_END):
+        # rank by first-minute hike, strongest first
+        ranked = sorted(morning.items(), key=lambda kv: -kv[1]["hike"])
+        taken = 0
+        for sym, info in ranked:
+            if taken >= TOP_N_OPEN:
+                break
+            if sym in st["open"] or sym in st["closed"] or sym not in m1:
                 continue
             df = m1[sym]
             price = float(df["Close"].iloc[-1])
@@ -283,29 +291,36 @@ def main():
             if pc <= 0:
                 continue
             chg = (price / pc - 1) * 100
-            if abs(chg) > CHASE_MAX:                           # chase filter
+            if abs(chg) > CHASE_MAX:                    # HARD: never chase >4%
+                print(f"  skip {sym}: already {chg:+.1f}% (chase)")
                 continue
-            vw = vwap(df)
-            up = spike_chg > 0
-            # direction must match spike AND price vs VWAP
-            if up and not (price > vw):
-                continue
-            if (not up) and not (price < vw):
-                continue
+            up = info["chg"] > 0
             direction = "CALL" if up else "PUT"
+            # metadata for later "should I have waited?" analysis
+            vw  = vwap(df)
+            oir = (oi[sym]["latest_oi"] / oi[sym]["prev_oi"]
+                   if sym in oi and oi[sym]["prev_oi"] else 0)
+            vwap_ok = (price > vw) if up else (price < vw)
             ch = fetch_chain(sess, sym)
             if not ch:
-                continue
+                print(f"  skip {sym}: no chain"); continue
             strike, prem = pick_strike(ch, direction)
             if prem <= 0:
-                continue
+                print(f"  skip {sym}: no premium"); continue
             st["open"][sym] = {"dir": direction, "strike": strike,
                                "entry_prem": prem, "entry_bar": now.strftime("%H:%M"),
-                               "spike_chg": spike_chg}
-            tg(f"\U0001F4CB <b>PAPER ENTRY</b>  {sym} {direction} {strike:.0f} "
-               f"({STRIKES_OTM} OTM)\nprem {prem:.1f} x {LOTS} lots  "
-               f"| spot {price:.1f} vs VWAP {vw:.1f}  | OI {oir:.2f}x  "
-               f"| move {chg:+.1f}%\ntarget +{TARGET_PCT:.0f}% / stop {STOP_PCT:.0f}% / close 11:00")
+                               "hike": info["hike"], "oi_ratio": round(oir, 2),
+                               "vwap_ok": bool(vwap_ok)}
+            taken += 1
+            tg(f"\U0001F4CB <b>PAPER ENTRY {taken}/{TOP_N_OPEN}</b>  {sym} "
+               f"{direction} {strike:.0f} ({STRIKES_OTM} OTM)\n"
+               f"prem {prem:.1f} x {LOTS} lots | move {chg:+.1f}% | "
+               f"hike {info['hike']:.1f}x | OI {oir:.2f}x | VWAP-ok {vwap_ok}\n"
+               f"target +{TARGET_PCT:.0f}% / stop {STOP_PCT:.0f}% / close 11:00")
+        st["entered_open"] = True
+        if taken == 0:
+            tg("<b>PAPER</b> " + today + ": no clean entries at open "
+               "(all morning-list names already >4% or unavailable).")
 
     # ---- daily wrap at/after 11:00 ----
     if force_close and not st.get("wrapped"):
