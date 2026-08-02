@@ -1,0 +1,28 @@
+name: Paper Trader
+on:
+  workflow_dispatch: {}
+concurrency:
+  group: paper-trader
+  cancel-in-progress: false
+permissions:
+  contents: write
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r requirements.txt
+      - env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python paper_trader.py
+      - name: Persist paper state
+        run: |
+          git config user.name "paper-bot"
+          git config user.email "paper@bot"
+          git add paper_state.json scorecard.csv 2>/dev/null || true
+          git diff --cached --quiet || git commit -m "paper state $(date -u +%H:%M)" 
+          git push || true

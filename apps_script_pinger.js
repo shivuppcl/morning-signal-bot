@@ -44,6 +44,9 @@ function tick() {
   // Evening deals digest: one dispatch window 18:42-18:50 IST
   if (hm >= 18 * 60 + 42 && hm <= 18 * 60 + 50) dispatch('deals.yml');
 
+  // Paper trader: manage entries/exits every tick 9:28-11:05 IST
+  if (hm >= 9 * 60 + 28 && hm <= 11 * 60 + 5) dispatch('paper.yml');
+
   // /scan checker: market hours
   if (hm >= 8 * 60 + 30 && hm <= 16 * 60 + 30) dispatch('ondemand.yml');
 }
