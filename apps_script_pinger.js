@@ -37,9 +37,10 @@ function tick() {
   if (day === 0 || day === 6) return;          // weekends off
   const hm = ist.getHours() * 60 + ist.getMinutes();
 
-  // Morning signal: one tick lands in this window; workflow-side
-  // concurrency + dedup guarantee a single message.
-  if (hm >= 9 * 60 + 8 && hm <= 9 * 60 + 16) dispatch('morning.yml');
+  // RULE #1 cross alerts: every 3 minutes, 9:19 - 15:15 IST.
+  // (Set the Apps Script trigger to EVERY MINUTE for true 3-min cadence.)
+  if (hm >= 9 * 60 + 19 && hm <= 15 * 60 + 15 && ist.getMinutes() % 3 === 0)
+    dispatch('rule1.yml');
 
   // Evening deals digest: one dispatch window 18:42-18:50 IST
   if (hm >= 18 * 60 + 42 && hm <= 18 * 60 + 50) dispatch('deals.yml');
