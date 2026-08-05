@@ -136,6 +136,12 @@ def scan():
         yc    = float(ydf["close"].iloc[-1])
         tv, yv = float(t1["volume"].iloc[0]), float(y1["volume"].iloc[0])
         px     = float(t1["close"].iloc[0])
+        if yv <= 0:
+            # High-priced/low-share stocks (BOSCHLTD @ Rs42k) often have a ZERO
+            # 9:16 candle yesterday — use yesterday's median nonzero 1-min
+            # volume as baseline instead of silently skipping the stock.
+            _nz = ydf[ydf["volume"] > 0]["volume"]
+            yv = float(_nz.median()) if len(_nz) else 0.0
         if yv <= 0 or tv <= 0 or yc <= 0:
             continue
         hike = tv / yv
