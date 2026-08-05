@@ -1,0 +1,29 @@
+name: Sheet Data Logger
+on:
+  workflow_dispatch: {}
+concurrency:
+  group: sheetlog
+  cancel-in-progress: false
+permissions:
+  contents: write
+jobs:
+  log:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r requirements.txt
+      - run: python sheet_logger.py
+      - name: Weekly F&O list refresh (Mondays)
+        run: |
+          if [ "$(date -u +%u)" = "1" ]; then python fno_list_update.py; fi
+      - name: Commit snapshots
+        run: |
+          git config user.name "sheet-logger"
+          git config user.email "logger@bot"
+          git pull --rebase -q || true
+          git add data/ 2>/dev/null || true
+          git diff --cached --quiet || git commit -m "data $(date -u +%H:%M)"
+          git push || true

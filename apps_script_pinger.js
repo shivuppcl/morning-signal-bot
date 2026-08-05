@@ -48,6 +48,10 @@ function tick() {
   // Paper trader: manage entries/exits every tick 9:28-11:05 IST
   if (hm >= 9 * 60 + 28 && hm <= 11 * 60 + 5) dispatch('paper.yml');
 
+  // Sheet data logger: every 5 min, 9:15-15:35 IST
+  if (hm >= 9 * 60 + 15 && hm <= 15 * 60 + 35 && ist.getMinutes() % 5 === 0)
+    dispatch('sheetlog.yml');
+
   // /scan checker: market hours
   if (hm >= 8 * 60 + 30 && hm <= 16 * 60 + 30) dispatch('ondemand.yml');
 }
